@@ -22,6 +22,16 @@ unless prefix caching is explicitly forced. These values describe the
 default engine behavior, not exhaustive model-by-model benchmarking on
 Metal. Qwen3 is explicitly covered by the paged prefix-cache e2e test.
 
+`HF AWQ checkpoints`: load through mlx-lm 0.31.3+'s built-in
+`_transform_awq_weights` repack. vllm-metal adds an entry-point preflight
+that normalizes AutoAWQ aliases (`w_bit`, `q_group_size`, uppercase
+`"GEMM"`) and rejects unsupported variants (`gemv`, `bits != 4`,
+`group_size != 128`, `zero_point=false`) with a clear error before model
+state is constructed, plus a post-load dtype alignment so non-quantized
+floating params (embeddings, layernorms, biases) match the engine's
+runtime dtype. The preflight, dtype alignment, and
+`_transform_awq_weights` repack are architecture-agnostic.
+
 | Model | Support | Attention Kernel | Automatic Prefix Cache | PRs | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Qwen3 | ✅ | GQA (paged) | ✅ | [#232](https://github.com/vllm-project/vllm-metal/pull/232), [#237](https://github.com/vllm-project/vllm-metal/pull/237), [#283](https://github.com/vllm-project/vllm-metal/pull/283) | Validated by the paged prefix-cache e2e test |
@@ -44,3 +54,4 @@ Metal. Qwen3 is explicitly covered by the paged prefix-cache e2e test.
 | Qwen2.5-7B-Instruct | ✅ | GQA (paged) | ✅ | [#324](https://github.com/vllm-project/vllm-metal/pull/324) | Validated on MacBook Pro (Apple M1 Pro, 16 GB) on macOS 26.2; tested with `mlx-community/Qwen2.5-7B-Instruct-4bit` |
 | Qwen2.5-3B-Instruct | ✅ | GQA (paged) | ✅ | [#323](https://github.com/vllm-project/vllm-metal/pull/323) | Validated on MacBook Pro (Apple M1 Pro, 16 GB) on macOS 26.2; tested with `mlx-community/Qwen2.5-3B-Instruct-4bit` |
 | SmolLM3-3B | ✅ | GQA (paged) | ✅ | [#334](https://github.com/vllm-project/vllm-metal/pull/334) | Validated on MacBook Air (Apple M2, 16 GB) with `mlx-community/SmolLM3-3B-4bit` |
+| Qwen2.5-1.5B-Instruct-AWQ | ✅ | GQA (paged) | ✅ | [#340](https://github.com/vllm-project/vllm-metal/pull/340) | First HF AWQ checkpoint validated on Metal; tested with `Qwen/Qwen2.5-1.5B-Instruct-AWQ` on MacBook Pro (Apple M1 Pro, 16 GB), macOS 26.2. See AWQ note above the table |

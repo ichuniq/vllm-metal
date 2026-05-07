@@ -498,6 +498,98 @@ class TestModelLifecycle:
         assert runner._is_stt is True
         assert runner._stt_runtime_adapter == (adapter, "stub-model")
 
+    @pytest.mark.parametrize(
+        "is_awq", [True, False], ids=["awq-checkpoint", "non-awq-checkpoint"]
+    )
+    def test_load_dispatches_by_awq_detection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        is_awq: bool,
+    ) -> None:
+        """Pin both sides of the lifecycle dispatch contract introduced
+        by the owner-shape refactor.
+
+        When ``AWQQuantLoader.for_model`` reports an AWQ checkpoint,
+        ``ModelLifecycle._load_generation_model`` delegates the actual
+        load to ``AWQQuantLoader.load`` and never falls back to the
+        generic ``mlx_lm.load``. When it returns ``None`` (non-AWQ),
+        lifecycle uses the generic ``mlx_lm.load`` and never passes
+        ``model_config`` (which is reserved for the AWQ owner's
+        normalized quant config kwargs). AWQ *detection* — not the
+        model-name string or any other heuristic — is what gates the
+        dispatch.
+        """
+        fake_model = SimpleNamespace(config=_text_config())
+        fake_tokenizer = object()
+        awq_load_calls: list[dict[str, object]] = []
+        mlx_lm_load_calls: list[dict[str, object]] = []
+
+        class _StubAWQLoader:
+            @classmethod
+            def for_model(cls, _model_name: str) -> _StubAWQLoader | None:
+                return cls() if is_awq else None
+
+            @staticmethod
+            def cache_key(model_name: str, *, target_dtype: object) -> tuple[str, str]:
+                return (model_name, f"mlx_lm-awq:{target_dtype}")
+
+            def load(
+                self,
+                model_path: str,
+                *,
+                target_dtype: object,
+                tokenizer_config: dict[str, object] | None,
+            ) -> tuple[object, object]:
+                awq_load_calls.append(
+                    {
+                        "model_path": model_path,
+                        "target_dtype": target_dtype,
+                        "tokenizer_config": (
+                            dict(tokenizer_config) if tokenizer_config else None
+                        ),
+                    }
+                )
+                return fake_model, fake_tokenizer
+
+        def _fake_mlx_lm_load(*args: object, **kwargs: object) -> tuple[object, object]:
+            mlx_lm_load_calls.append({"args": args, "kwargs": kwargs})
+            return fake_model, fake_tokenizer
+
+        monkeypatch.setattr(model_lifecycle, "AWQQuantLoader", _StubAWQLoader)
+        monkeypatch.setattr(model_lifecycle, "_MODEL_CACHE", {})
+        monkeypatch.setattr(model_lifecycle, "mlx_lm_load", _fake_mlx_lm_load)
+
+        lifecycle, runner = _make_lifecycle()
+        lifecycle.load()
+
+        assert runner.model is fake_model
+        assert runner.tokenizer is fake_tokenizer
+
+        if is_awq:
+            assert len(awq_load_calls) == 1, (
+                f"expected exactly one AWQQuantLoader.load() call, "
+                f"got {len(awq_load_calls)}"
+            )
+            assert mlx_lm_load_calls == [], (
+                "generic mlx_lm.load must NOT be called when AWQQuantLoader "
+                "owns the load path"
+            )
+            call = awq_load_calls[0]
+            assert call["model_path"] == "stub-model"
+            assert call["target_dtype"] is not None, (
+                "lifecycle must derive target_dtype from "
+                "runner.model_config.dtype and thread it to the loader"
+            )
+            assert call["tokenizer_config"] == {"trust_remote_code": False}
+        else:
+            assert awq_load_calls == [], (
+                "AWQQuantLoader.load must NOT be called for a non-AWQ checkpoint"
+            )
+            assert len(mlx_lm_load_calls) == 1
+            # The generic path must NOT pass ``model_config`` (which is
+            # reserved for the AWQ owner's normalized quant config kwargs).
+            assert "model_config" not in mlx_lm_load_calls[0]["kwargs"]
+
 
 class TestResolveModelDims:
     def _resolve(self, args: dict[str, object]) -> object:
